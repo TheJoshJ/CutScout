@@ -13,6 +13,14 @@ function subscribe(channel: string, listener: () => void): () => void {
 }
 
 const api: VodSearchApi = {
+  enrichment: {
+    getSettings: () => ipcRenderer.invoke(ipcChannels.enrichmentGetSettings),
+    setSettings: (settings) => ipcRenderer.invoke(ipcChannels.enrichmentSetSettings, settings),
+    models: () => ipcRenderer.invoke(ipcChannels.enrichmentModels),
+    openSetup: () => ipcRenderer.invoke(ipcChannels.enrichmentOpenSetup),
+    status: () => ipcRenderer.invoke(ipcChannels.enrichmentStatus),
+    test: (settings) => ipcRenderer.invoke(ipcChannels.enrichmentTest, settings)
+  },
   library: {
     selectFolder: () => ipcRenderer.invoke(ipcChannels.librarySelectFolder),
     addFolder: (path, publishSharedMetadata = false) =>

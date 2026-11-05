@@ -15,8 +15,15 @@ import {
 import { searchRequestSchema, searchResponseSchema } from "./search.js"
 import { processingScheduleSchema } from "./schedule.js"
 import { shortFormExportResponseSchema, shortFormProjectSchema } from "./short-form.js"
+import type { EnrichmentModel, EnrichmentSettings, EnrichmentStatus } from "./enrichment.js"
 
 export const ipcChannels = {
+  enrichmentGetSettings: "enrichment:get-settings",
+  enrichmentSetSettings: "enrichment:set-settings",
+  enrichmentModels: "enrichment:models",
+  enrichmentOpenSetup: "enrichment:open-setup",
+  enrichmentStatus: "enrichment:status",
+  enrichmentTest: "enrichment:test",
   librarySelectFolder: "library:select-folder",
   libraryAddFolder: "library:add-folder",
   libraryListFolders: "library:list-folders",
@@ -114,6 +121,14 @@ export const mediaPlaybackResponseSchema = z.object({
 })
 
 export interface VodSearchApi {
+  enrichment: {
+    getSettings(): Promise<EnrichmentSettings>
+    setSettings(settings: EnrichmentSettings): Promise<EnrichmentSettings>
+    models(): Promise<EnrichmentModel[]>
+    openSetup(): Promise<void>
+    status(): Promise<EnrichmentStatus>
+    test(settings: EnrichmentSettings): Promise<void>
+  }
   library: {
     selectFolder(): Promise<string | null>
     addFolder(path: string, publishSharedMetadata?: boolean): Promise<z.infer<typeof sourceFolderSchema>>

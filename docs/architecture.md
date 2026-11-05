@@ -24,6 +24,8 @@ CutScout is a local-first Electron application organized as a small workspace. S
 - `components/clip-composer.tsx`: clip-range selection and export entry points.
 - `components/short-form-*`: short-form project state, canvas rendering, UI, and export helpers.
 - `lib/format.ts`: presentation-only formatting shared by renderer features.
+- `features/settings/enrichment-settings.tsx`: optional provider/model selection,
+  connected OpenCode model discovery, and connection checks.
 
 Feature-specific components should stay under their feature folder. Move a component to `components` only when more than one feature genuinely uses it.
 
@@ -56,3 +58,19 @@ renderer -> preload contract -> main/indexer -> database/search/inference
 ```
 
 Packages must not import from `apps/desktop`. Renderer modules must not import database or inference implementations.
+
+## Optional enrichment
+
+The indexer schedules transcription, full-text indexing, and BGE embedding without
+requiring an LLM. `TranscriptEnricher` in `packages/inference/src/topic-analysis.ts`
+defines the provider-independent topic contract and validates its output and
+segment boundaries. Codex and OpenCode implement that contract. Provider/model
+configuration is persisted separately from credentials in the SQLite settings.
+New libraries start with summaries off; prior Codex libraries keep their default.
+
+OpenCode owns authentication and provider routing. CutScout starts its SDK server
+on loopback and lists text/tool-capable models from connected providers. Dedicated
+sessions deny all tools except `StructuredOutput`, and are removed after the
+request. Main-process shutdown asks the indexer to stop the managed server before
+terminating. An in-flight response is discarded if its transcript or provider/model
+configuration changed. Only validated topic replacements invalidate old vectors.

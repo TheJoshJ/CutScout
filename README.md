@@ -3,13 +3,13 @@
 CutScout is a private, Windows-first workspace for finding, reviewing, and
 repurposing moments from long-form video. It indexes existing subtitles or
 local Whisper transcripts, identifies recurring speakers with bundled Sherpa
-ONNX models, asks Codex to enrich natural transcript topics, and combines
+ONNX models, optionally uses your chosen LLM to enrich transcript topics, and combines
 full-text and semantic search.
 
 Source videos are referenced in place and are never modified. Transcripts, tags,
 speaker voice patterns, embeddings, and the search index stay under the application's local data folder.
-Only untimed transcript text is sent to OpenAI when Codex creates summaries and
-search metadata; video and audio files are never uploaded by CutScout.
+Only untimed transcript text is sent to the selected provider when AI summaries
+are enabled; video and audio files are never uploaded by CutScout.
 
 ## Download
 
@@ -27,14 +27,17 @@ Windows SmartScreen may ask for confirmation.
   across clips, and annotate transcript lines with user-managed speaker names.
 - Provides a Speakers review queue for finding every unassigned voice across the
   library, checking transcript evidence, and assigning or creating a speaker.
-- Creates an initial local full-text index, then replaces its fixed windows with Codex-selected topic sections.
+- Creates a local full-text index immediately, with optional AI topic sections later.
 - Adds local BGE embeddings for meaning-based retrieval.
 - Reuses portable transcript and topic bundles from a source folder's `.vod-search`
   directory, and can publish completed results there for other users of the same archive.
 - Runs `codex exec` with the complete untimed transcript, a bundled topic-analysis
   skill, and a strict JSON schema to choose natural boundaries and create
-  summaries, entities, events, aliases, and likely search phrases. Synopsis runs
-  are pinned to `gpt-5.4-mini` with low reasoning effort for cost efficiency.
+  summaries, entities, events, aliases, and likely search phrases. The default
+  Codex model is `gpt-5.4-mini` with low reasoning effort; the model is configurable.
+- Supports OpenCode's provider catalog and existing connections through its SDK,
+  including compatible subscription sign-ins, API providers, and local endpoints.
+  Structured responses are validated before replacing any working search data.
 - Opens matching videos in a full-width player with timestamp markers plus
   transcript and summary tabs.
 - Exports a selected source range as an MP4 clip or carries it into the
@@ -57,17 +60,48 @@ extension.
 
 ## First run
 
-1. Open **Settings** and install Codex, then select **Sign in** to authenticate
-   with ChatGPT or an OpenAI account. If Codex is already installed, CutScout
-   detects it.
-2. Open **Library** and use the first-run readiness panel to prepare Whisper
-   small.en and the semantic search index. Both are downloaded and managed
-   inside the app.
-3. Add one or more folders. Compatible shared metadata is reused automatically;
+1. Open **Library** and add a video folder. Existing subtitles become searchable
+   without an account, a local LLM, or any model download.
+2. For videos without subtitles, download **Speech recognition** (Whisper small.en)
+   from Library or Settings. For meaning-based search, optionally download the
+   semantic search component. Each download has its own progress and retry action;
+   setup stays visible after videos are discovered.
+3. Add more folders as needed. Compatible shared metadata is reused automatically;
    optionally enable **Contribute results to this folder** to share completed
    transcripts and summaries with other users of the same archive.
 4. Search for spoken words, names, or descriptions such as “death to Kalphite
    King,” then open a result at its timestamp.
+5. Optionally choose a connection and model under **Settings → AI summaries** for
+   richer topic summaries. New libraries default to summaries off. Transcription,
+   keyword search, and semantic indexing do not wait for an LLM. Semantic search indexes transcript text directly and
+   refreshes its vectors when topic summaries become available.
+
+If ingestion stops, Library and Activity show missing components and scan errors.
+Use **Retry scan** for a failed source or **Retry** for failed processing jobs.
+A completed scan with no supported videos is shown explicitly.
+
+## Bring your own model
+
+In **Settings → AI summaries**, choose **Off**, **Codex**, or **OpenCode**.
+Codex uses its existing ChatGPT/OpenAI sign-in and lets you enter a model ID.
+Existing libraries retain their prior Codex configuration when upgraded.
+
+For OpenCode, [install OpenCode](https://opencode.ai/docs/) and
+[connect a provider](https://opencode.ai/docs/providers/) there, then choose
+**Load connected models** in CutScout. Select a `provider/model` ID and use
+**Test connection** to verify access with a sample paragraph. **Save connection**
+enables background summaries of library transcripts. The test can consume a small
+amount of your plan or API allowance. Changing the provider or model queues
+replacement topic analysis; existing keyword and semantic results remain usable
+until validated replacements are ready.
+
+CutScout starts an app-managed OpenCode server on loopback using an available
+port. OpenCode owns provider credentials and sign-in; CutScout does not copy its
+tokens or handle vendor passwords. Sessions permit only the structured-output
+tool, and temporary transcript sessions are removed after each request. Supported
+subscription sign-ins depend on the provider; a chat subscription is not a
+universal API credential. For other services, configure an API key or compatible
+endpoint in OpenCode. Local LLMs remain optional.
 
 The Whisper, BGE, and speaker-model downloads are pinned and SHA-256 verified.
 Whisper is about 465 MB, BGE is about 128 MB, and the bundled speaker models add
@@ -131,6 +165,14 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+For a Windows ingestion smoke test with generated speech and captions, run
+`pnpm --filter @vod-search/desktop predev` and then `pnpm test:ingestion` after
+building. It downloads verified Whisper/BGE models into an isolated `.cache`
+directory and checks real transcription, search without Codex, scan recovery,
+and shutdown. Set `CUTSCOUT_SMOKE_MODELS` to reuse an existing verified model
+directory on subsequent runs. Rebuild `better-sqlite3` for the system Node
+version before returning to Node-based database tests.
 
 The bundled Windows runtimes are checksum-pinned builds of FFmpeg,
 `whisper.cpp`, and the Sherpa segmentation and speaker-embedding models. They are downloaded into an ignored `resources/runtime/windows`

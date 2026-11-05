@@ -18,6 +18,8 @@ const sourceFolder: SourceFolder = {
   path: "D:\\Capture Archive\\RuneScape",
   addedAtMs: now - 1000 * 60 * 60 * 24 * 180,
   lastScanAtMs: now - 1000 * 60 * 4,
+  scanState: "idle",
+  scanError: null,
   publishSharedMetadata: true,
   availableMediaCount: 9,
   missingMediaCount: 0
@@ -101,6 +103,14 @@ let processingSchedule: ProcessingSchedule = {
 
 export function createDevMockApi(): VodSearchApi {
   return {
+    enrichment: {
+      getSettings: async () => ({ provider: "off", model: "", reasoningEffort: "low" }),
+      setSettings: async (settings) => settings,
+      models: async () => [],
+      openSetup: async () => undefined,
+      status: async () => ({ state: "off", message: "AI summaries are off. Local search is available." }),
+      test: async () => undefined
+    },
     library: {
       selectFolder: async () => null,
       addFolder: async () => sourceFolder,

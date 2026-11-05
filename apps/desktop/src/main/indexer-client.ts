@@ -95,9 +95,15 @@ export class IndexerClient {
     return () => listeners.delete(listener)
   }
 
-  stop(): void {
-    this.child?.kill()
+  async stop(): Promise<void> {
+    const child = this.child
+    if (!child) return
     this.child = null
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { child.kill(); resolve() }, 2_000)
+      child.once("exit", () => { clearTimeout(timer); resolve() })
+      child.postMessage({ type: "shutdown" })
+    })
   }
 
   private onMessage(message: RpcResponse | IndexerEvent): void {

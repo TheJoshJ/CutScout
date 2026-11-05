@@ -26,9 +26,10 @@ const obsoleteRuntimeIds = ["llama-cpu", "llama-vulkan", "uv", "sherpa"]
 const archives: RuntimeArchive[] = [
   {
     id: "ffmpeg",
-    url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-20-14-10/ffmpeg-n7.1.5-9-gb9a218bc1e-win64-lgpl-shared-7.1.zip",
-    sizeBytes: 62_417_342,
-    sha256: "4576b35688220a29818a5b0f2ebc8b69f5a0af91b6af739c9d888c6cd26e5724",
+    // Month-end builds are retained for two years; ordinary daily builds expire after 14 days.
+    url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n7.1.5-12-g1fdbca85aa-win64-lgpl-shared-7.1.zip",
+    sizeBytes: 62_425_578,
+    sha256: "0f376f96fb38554ccefb1b2ae9c7c6a7b351f0e60a372b38262c320e8392c5d0",
     flattenSingleDirectory: true,
     removeAfterExtract: ["doc", "include", "lib"]
   },
@@ -107,8 +108,9 @@ for (const archive of archives) {
   console.info(`${archive.id}: preparing`)
   if (archive.format === "file") {
     await copyFile(archivePath, join(targetPath, archive.outputFileName ?? basename(archivePath)))
-  } else if (archive.format === "tar-bz2") {
-    await runProcess("tar", ["-xjf", archivePath, "-C", targetPath])
+  } else if (archive.format === "tar-bz2" || process.platform === "win32") {
+    // Windows ships bsdtar, which handles both formats without the Node ZIP stream adapter.
+    await runProcess("tar", [archive.format === "tar-bz2" ? "-xjf" : "-xf", archivePath, "-C", targetPath])
   } else {
     await extract(archivePath, { dir: targetPath })
   }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import type { EnrichmentSettings } from "@vod-search/contracts"
 import type Database from "better-sqlite3"
 import {
   type ProcessingSchedule,
@@ -123,7 +124,7 @@ export class Repository {
 
   getSourceFolder(id: string): SourceFolder {
     const row = this.db.prepare(
-      `SELECT sf.id, sf.path, sf.added_at_ms, sf.last_scan_at_ms, sf.publish_shared_metadata,
+      `SELECT sf.id, sf.path, sf.added_at_ms, sf.last_scan_at_ms, sf.scan_state, sf.scan_error, sf.publish_shared_metadata,
         COUNT(CASE WHEN ma.availability = 'available' THEN 1 END) AS available_media_count,
         COUNT(CASE WHEN ma.availability = 'missing' THEN 1 END) AS missing_media_count
        FROM source_folders sf
@@ -137,7 +138,7 @@ export class Repository {
 
   listSourceFolders(): SourceFolder[] {
     const rows = this.db.prepare(
-      `SELECT sf.id, sf.path, sf.added_at_ms, sf.last_scan_at_ms, sf.publish_shared_metadata,
+      `SELECT sf.id, sf.path, sf.added_at_ms, sf.last_scan_at_ms, sf.scan_state, sf.scan_error, sf.publish_shared_metadata,
         COUNT(CASE WHEN ma.availability = 'available' THEN 1 END) AS available_media_count,
         COUNT(CASE WHEN ma.availability = 'missing' THEN 1 END) AS missing_media_count
        FROM source_folders sf
@@ -149,7 +150,11 @@ export class Repository {
   }
 
   finishSourceFolderScan(id: string): void {
-    this.db.prepare("UPDATE source_folders SET last_scan_at_ms = ? WHERE id = ?").run(Date.now(), id)
+    this.db.prepare("UPDATE source_folders SET last_scan_at_ms = ?, scan_state = 'idle', scan_error = NULL WHERE id = ?").run(Date.now(), id)
+  }
+
+  setSourceFolderScanState(id: string, state: SourceFolder["scanState"], error: string | null = null): void {
+    this.db.prepare("UPDATE source_folders SET scan_state = ?, scan_error = ? WHERE id = ?").run(state, error, id)
   }
 
   removeSourceFolder(id: string): void {
@@ -919,8 +924,7 @@ export class Repository {
   isEnrichmentComplete(mediaId: string, requiredVersion?: string): boolean { return this.jobs.isEnrichmentComplete(mediaId, requiredVersion) }
   getTopicsForSharing(mediaId: string): { enrichmentVersion: string; topics: SharedTranscriptTopic[] } | null { return this.jobs.getTopicsForSharing(mediaId) }
   ensureEnrichmentJobs(requiredVersion?: string): number { return this.jobs.ensureEnrichmentJobs(requiredVersion) }
-  ensureEmbeddingJobs(requiredEnrichmentVersion?: string, requiredEmbeddingVersion?: string): number { return this.jobs.ensureEmbeddingJobs(requiredEnrichmentVersion, requiredEmbeddingVersion) }
-  cancelEmbeddingsBlockedByEnrichment(requiredVersion?: string): number { return this.jobs.cancelEmbeddingsBlockedByEnrichment(requiredVersion) }
+  ensureEmbeddingJobs(requiredEmbeddingVersion?: string): number { return this.jobs.ensureEmbeddingJobs(requiredEmbeddingVersion) }
   cancelPendingJobsByStage(stage: "diarize" | "embed" | "enrich"): number { return this.jobs.cancelPendingJobsByStage(stage) }
   cancelTranscriptionsBlockedByFailedProbe(): number { return this.jobs.cancelTranscriptionsBlockedByFailedProbe() }
   getJob(id: string): Job { return this.jobs.getJob(id) }
@@ -938,6 +942,8 @@ export class Repository {
   getClipOutputFolder(): string | null { return this.jobs.getClipOutputFolder() }
   setClipOutputFolder(path: string): string { return this.jobs.setClipOutputFolder(path) }
   getProcessingSchedule(): ProcessingSchedule { return this.jobs.getProcessingSchedule() }
+  getEnrichmentSettings(): EnrichmentSettings { return this.jobs.getEnrichmentSettings() }
+  setEnrichmentSettings(settings: EnrichmentSettings): EnrichmentSettings { return this.jobs.setEnrichmentSettings(settings) }
   setProcessingSchedule(schedule: ProcessingSchedule): ProcessingSchedule { return this.jobs.setProcessingSchedule(schedule) }
   getStats(): LibraryStats { return this.jobs.getStats() }
 }

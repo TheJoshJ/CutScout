@@ -13,6 +13,49 @@ afterEach(async () => {
 })
 
 describe("scanSourceFolder", () => {
+  it("persists scan failures and clears them after a successful retry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vod-search-scan-"))
+    temporaryPaths.push(root)
+    const source = join(root, "temporarily-unavailable")
+    const database = openDatabase(":memory:")
+    try {
+      const repository = new Repository(database.db)
+      const folder = repository.addSourceFolder(source, source)
+      await expect(scanSourceFolder(repository, folder.id, source)).rejects.toThrow()
+      expect(repository.getSourceFolder(folder.id)).toMatchObject({ scanState: "failed", lastScanAtMs: null })
+      expect(repository.getSourceFolder(folder.id).scanError).toBeTruthy()
+      await mkdir(source)
+      await scanSourceFolder(repository, folder.id, source)
+      expect(repository.getSourceFolder(folder.id)).toMatchObject({ scanState: "idle", scanError: null, availableMediaCount: 0 })
+      expect(repository.getSourceFolder(folder.id).lastScanAtMs).toBeTypeOf("number")
+    } finally {
+      database.close()
+    }
+  })
+
+  it("preserves existing media availability when directory discovery fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vod-search-scan-"))
+    temporaryPaths.push(root)
+    const source = join(root, "source")
+    await mkdir(source)
+    await writeFile(join(source, "clip.mp4"), "fixture")
+    const database = openDatabase(":memory:")
+    try {
+      const repository = new Repository(database.db)
+      const folder = repository.addSourceFolder(source, source)
+      await scanSourceFolder(repository, folder.id, source)
+      await rm(join(source, "clip.mp4"))
+      await rm(source, { recursive: true })
+      // A file at the source path makes realpath succeed but directory discovery fail.
+      await writeFile(source, "not a directory")
+      await expect(scanSourceFolder(repository, folder.id, source)).rejects.toThrow()
+      expect(repository.listMedia({ sourceFolderId: folder.id, offset: 0, limit: 10 })[0]!.availability).toBe("available")
+      expect(repository.getSourceFolder(folder.id).scanState).toBe("failed")
+    } finally {
+      database.close()
+    }
+  })
+
   it("discovers media and indexes a matching sidecar progressively", async () => {
     const root = await mkdtemp(join(tmpdir(), "vod-search-scan-"))
     temporaryPaths.push(root)

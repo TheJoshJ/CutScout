@@ -5,6 +5,8 @@ import { fork } from "node:child_process"
 import { openDatabase, Repository } from "@vod-search/database"
 import {
   addFolderRequestSchema,
+  enrichmentSettingsSchema,
+  type EnrichmentSettings,
   isJobStageAllowed,
   isProcessingWindowOpen,
   listMediaRequestSchema,
@@ -27,8 +29,9 @@ import {
   BGE_EMBEDDING_VERSION,
   BgeEmbedder,
   buildSemanticPassage,
-  CODEX_ENRICHMENT_VERSION,
   CodexEnricher,
+  OpenCodeConnection,
+  type TranscriptEnricher,
   extractEmbeddedSubtitle,
   ModelManager,
   SHERPA_ENGINE_VERSION,
@@ -41,6 +44,7 @@ import {
 } from "@vod-search/inference"
 import { isPathWithin, scanSourceFolder } from "./scanner.js"
 import { publishSharedMetadata } from "./shared-metadata.js"
+import { describeBlockedJob } from "./job-readiness.js"
 import { watch, type FSWatcher } from "chokidar"
 
 interface RpcRequest {
@@ -55,6 +59,7 @@ if (!databasePath) throw new Error("VOD_SEARCH_DB_PATH is required")
 await mkdir(dirname(databasePath), { recursive: true })
 const database = openDatabase(databasePath)
 const repository = new Repository(database.db)
+repository.getEnrichmentSettings()
 const search = new SearchService(repository)
 const modelsPathFromEnvironment = process.env.VOD_SEARCH_MODELS_PATH
 if (!modelsPathFromEnvironment) throw new Error("VOD_SEARCH_MODELS_PATH is required")
@@ -67,7 +72,11 @@ repository.recoverRunningJobs()
 repository.cancelTranscriptionsBlockedByFailedProbe()
 let embedder: BgeEmbedder | null = null
 let embedderStarting: Promise<BgeEmbedder | null> | null = null
-let enricher: CodexEnricher | null = null
+const openCode = new OpenCodeConnection(join(dirname(modelsPath), "opencode-workspace"))
+let enricher: TranscriptEnricher | null = null
+let enricherStarting = false
+let enrichmentSetupError: string | null = null
+let enrichmentGeneration = 0
 let nextEnricherAttemptAt = 0
 let schedulerRunning = false
 
@@ -77,6 +86,10 @@ const rescanTimers = new Map<string, NodeJS.Timeout>()
 const rescanRequested = new Set<string>()
 
 process.parentPort.on("message", (event) => {
+  if (event.data?.type === "shutdown") {
+    openCode.close()
+    process.exit(0)
+  }
   const message = event.data as RpcRequest
   if (message.type !== "request") return
   void handleRequest(message)
@@ -100,6 +113,31 @@ async function handleRequest(request: RpcRequest): Promise<void> {
 
 async function dispatch(method: string, payload: unknown): Promise<unknown> {
   switch (method) {
+    case "enrichment:get-settings": return repository.getEnrichmentSettings()
+    case "enrichment:set-settings": {
+      const settings = repository.setEnrichmentSettings(enrichmentSettingsSchema.parse(payload))
+      enrichmentGeneration += 1
+      enricher = null
+      enrichmentSetupError = null
+      nextEnricherAttemptAt = 0
+      notifyJobsChanged()
+      return settings
+    }
+    case "enrichment:models": return openCode.listModels()
+    case "enrichment:status": {
+      const settings = repository.getEnrichmentSettings()
+      return settings.provider === "off" ? { state: "off", message: "AI summaries are off. Local search is available." }
+        : enrichmentSetupError ? { state: "error", message: enrichmentSetupError }
+        : enricher ? { state: "ready", message: "Provider detected. Test connection to verify model access." }
+        : { state: "checking", message: "Checking the selected provider…" }
+    }
+    case "enrichment:test": {
+      const settings = enrichmentSettingsSchema.parse(payload)
+      if (settings.provider === "off") throw new Error("Choose a summary provider first")
+      const client = await createEnricher(settings)
+      await client.enrichTranscript([{ segmentId: 0, text: "This is a CutScout connection test. No library transcript is included." }])
+      return undefined
+    }
     case "library:add-folder": {
       const input = addFolderRequestSchema.parse(payload)
       const canonicalPath = await realpath(input.path).catch(() => resolve(input.path))
@@ -164,11 +202,24 @@ async function dispatch(method: string, payload: unknown): Promise<unknown> {
     }
     case "search:query": {
       const input = searchRequestSchema.parse(payload)
-      const activeEmbedder = input.mode === "keyword" ? null : await getEmbedder()
-      const queryEmbedding = activeEmbedder ? await activeEmbedder.embedQuery(input.query) : undefined
+      let queryEmbedding: Float32Array | undefined
+      try {
+        const activeEmbedder = input.mode === "keyword" ? null : await getEmbedder()
+        queryEmbedding = activeEmbedder ? await activeEmbedder.embedQuery(input.query) : undefined
+      } catch (error) {
+        if (input.mode === "semantic") throw error
+        console.warn("Meaning search is unavailable; using keyword search.", error)
+      }
       return search.search(input, queryEmbedding)
     }
-    case "jobs:list": return repository.listJobs()
+    case "jobs:list": {
+      const [installations, ffprobe, ffmpeg, whisper] = await Promise.all([
+        models.list(), findRuntimeExecutable("ffprobe"), findRuntimeExecutable("ffmpeg"), findRuntimeExecutable("whisper-cli")
+      ])
+      return repository.listJobs().map((job) => describeBlockedJob(job, installations, {
+        ffprobe: Boolean(ffprobe), ffmpeg: Boolean(ffmpeg), whisper: Boolean(whisper)
+      }))
+    }
     case "jobs:retry": repository.retryJob(retryJobRequestSchema.parse({ jobId: payload }).jobId); notifyJobsChanged(); return undefined
     case "jobs:pause-all": repository.pauseAllJobs(); notifyJobsChanged(); return undefined
     case "jobs:resume-all": repository.resumeAllJobs(); notifyJobsChanged(); return undefined
@@ -247,6 +298,7 @@ function createThrottledNotification(callback: () => void, intervalMs: number): 
 }
 
 process.on("exit", () => {
+  openCode.close()
   database.close()
   for (const timer of rescanTimers.values()) clearTimeout(timer)
   for (const watcher of folderWatchers.values()) void watcher.close()
@@ -267,15 +319,16 @@ async function runSchedulerTick(): Promise<void> {
     const diarizationRuntime = ffmpegPath ? await sherpa.runtime() : null
     const hasEmbeddingModel = installations.some((model) =>
       model.modelId === "bge-small-en-v1.5" && model.status === "installed")
-    const activeEnricher = await getEnricher()
+    // Account/CLI discovery must never hold up local ingestion or search.
+    void getEnricher()
+    const activeEnricher = enricher
     let reconciledJobs = repository.cancelTranscriptionsBlockedByFailedProbe()
     if (diarizationRuntime) reconciledJobs += repository.ensureDiarizationJobs(SHERPA_ENGINE_VERSION)
     else reconciledJobs += repository.cancelPendingJobsByStage("diarize")
-    if (activeEnricher) reconciledJobs += repository.ensureEnrichmentJobs(CODEX_ENRICHMENT_VERSION)
+    if (activeEnricher) reconciledJobs += repository.ensureEnrichmentJobs(activeEnricher.version)
     else reconciledJobs += repository.cancelPendingJobsByStage("enrich")
     if (hasEmbeddingModel) {
-      reconciledJobs += repository.cancelEmbeddingsBlockedByEnrichment(CODEX_ENRICHMENT_VERSION)
-      reconciledJobs += repository.ensureEmbeddingJobs(CODEX_ENRICHMENT_VERSION, BGE_EMBEDDING_VERSION)
+      reconciledJobs += repository.ensureEmbeddingJobs(BGE_EMBEDDING_VERSION)
     } else {
       reconciledJobs += repository.cancelPendingJobsByStage("embed")
     }
@@ -366,28 +419,54 @@ async function getEmbedder(): Promise<BgeEmbedder | null> {
   return embedderStarting
 }
 
-async function getEnricher(): Promise<CodexEnricher | null> {
+function configuredEnrichmentVersion(settings: EnrichmentSettings): string | null {
+  if (settings.provider === "off") return null
+  return settings.provider === "codex"
+    ? `codex-cli:${settings.model}:${settings.reasoningEffort}:vod-transcript-topics-v3`
+    : `opencode:${settings.model}:vod-transcript-topics-v3`
+}
+
+async function createEnricher(settings: EnrichmentSettings): Promise<TranscriptEnricher> {
+  if (settings.provider === "opencode") {
+    const available = await openCode.listModels()
+    if (!available.some((model) => model.id === settings.model)) throw new Error("Connect this provider in OpenCode, then choose one of its available models.")
+    return openCode.createEnricher(settings.model)
+  }
+  const command = await findCodexCommand()
+  const instance = new CodexEnricher()
+  await instance.start({
+    workspacePath: join(dirname(modelsPath), "codex-workspace"),
+    executablePath: command.executablePath,
+    executablePrefixArgs: command.prefixArgs,
+    model: settings.model,
+    reasoningEffort: settings.reasoningEffort
+  })
+  const status = await instance.probe()
+  if (!status.installed || !status.authenticated) throw new Error("Install and sign in to Codex, choose OpenCode, or turn AI summaries off.")
+  return instance
+}
+
+async function getEnricher(): Promise<TranscriptEnricher | null> {
   if (enricher) return enricher
-  if (Date.now() < nextEnricherAttemptAt) return null
+  if (enricherStarting || Date.now() < nextEnricherAttemptAt) return null
+  const settings = repository.getEnrichmentSettings()
+  if (settings.provider === "off") return null
+  const generation = enrichmentGeneration
+  enricherStarting = true
   try {
-    const command = await findCodexCommand()
-    const instance = new CodexEnricher()
-    await instance.start({
-      workspacePath: join(dirname(modelsPath), "codex-workspace"),
-      executablePath: command.executablePath,
-      executablePrefixArgs: command.prefixArgs
-    })
-    const status = await instance.probe()
-    if (!status.installed || !status.authenticated) {
-      nextEnricherAttemptAt = Date.now() + 30_000
-      return null
-    }
+    const instance = await createEnricher(settings)
+    if (generation !== enrichmentGeneration) return null
     enricher = instance
+    enrichmentSetupError = null
     return instance
   } catch (error) {
-    nextEnricherAttemptAt = Date.now() + 30_000
-    console.error("Codex enrichment could not start:", error)
+    if (generation === enrichmentGeneration) {
+      nextEnricherAttemptAt = Date.now() + 30_000
+      enrichmentSetupError = error instanceof Error ? error.message : String(error)
+    }
     return null
+  } finally {
+    enricherStarting = false
   }
 }
 
@@ -561,11 +640,11 @@ function diarizationThreads(mode: "low" | "normal" | "high"): number {
 }
 
 async function runEmbeddingJob(jobId: string, mediaId: string, activeEmbedder: BgeEmbedder): Promise<void> {
-  if (!repository.isEnrichmentComplete(mediaId)) {
-    repository.cancelJob(mediaId, "embed")
+  const chunks = repository.getChunksForEmbedding(mediaId)
+  if (chunks.length === 0) {
+    repository.updateJob(jobId, { status: "cancelled", error: null })
     return
   }
-  const chunks = repository.getChunksForEmbedding(mediaId)
   const chunkIds = chunks.map((chunk) => chunk.id)
   let completed = 0
   for (let index = 0; index < chunks.length; index += 32) {
@@ -592,20 +671,25 @@ async function runEmbeddingJob(jobId: string, mediaId: string, activeEmbedder: B
   notifyLibraryChanged()
 }
 
-async function runEnrichmentJob(jobId: string, mediaId: string, activeEnricher: CodexEnricher): Promise<void> {
+async function runEnrichmentJob(jobId: string, mediaId: string, activeEnricher: TranscriptEnricher): Promise<void> {
   const transcript = repository.getTranscript(mediaId).filter((segment) => segment.text.trim())
-  if (transcript.length === 0) throw new Error("No generated subtitles are available for Codex enrichment")
+  if (transcript.length === 0) throw new Error("No transcript is available for AI summaries")
   const transcriptVersion = repository.getTranscriptVersion(mediaId)
   if (!transcriptVersion) throw new Error("The transcript version is unavailable")
   const topics = await activeEnricher.enrichTranscript(transcript.map((segment) => ({
     segmentId: segment.id,
     text: segment.text.trim().replace(/\s+/g, " ")
   })))
+  if (configuredEnrichmentVersion(repository.getEnrichmentSettings()) !== activeEnricher.version) {
+    if (repository.getEnrichmentSettings().provider === "off") repository.updateJob(jobId, { status: "cancelled", error: null })
+    else repository.requeueJob(mediaId, "enrich")
+    return
+  }
   if (repository.getTranscriptVersion(mediaId) !== transcriptVersion) {
     repository.requeueJob(mediaId, "enrich")
     return
   }
-  repository.replaceChunksWithTopics(mediaId, materializeTopicChunks(transcript, topics), CODEX_ENRICHMENT_VERSION)
+  repository.replaceChunksWithTopics(mediaId, materializeTopicChunks(transcript, topics), activeEnricher.version)
   try {
     await publishSharedMetadata(repository, mediaId)
   } catch (error) {
@@ -620,9 +704,9 @@ function materializeTopicChunks(transcript: TranscriptSegment[], topics: Transcr
   const positions = new Map(transcript.map((segment, index) => [segment.id, index]))
   return topics.map((topic, index) => {
     const startIndex = positions.get(topic.startSegmentId)
-    if (startIndex === undefined) throw new Error(`Codex topic referenced an unknown transcript segment: ${topic.startSegmentId}`)
+    if (startIndex === undefined) throw new Error(`AI topic referenced an unknown transcript segment: ${topic.startSegmentId}`)
     const nextStartIndex = index + 1 < topics.length ? positions.get(topics[index + 1]!.startSegmentId) : transcript.length
-    if (nextStartIndex === undefined || nextStartIndex <= startIndex) throw new Error("Codex topic boundaries are not ordered")
+    if (nextStartIndex === undefined || nextStartIndex <= startIndex) throw new Error("AI topic boundaries are not ordered")
     const segments = transcript.slice(startIndex, nextStartIndex)
     const last = segments.at(-1)!
     return {
@@ -718,10 +802,14 @@ function startFolderScan(folderId: string, path: string, force = false): void {
   }
   if (!force && !isProcessingWindowOpen(repository.getProcessingSchedule().ingestion)) {
     rescanRequested.add(folderId)
+    repository.setSourceFolderScanState(folderId, "queued")
+    notifyLibraryChanged()
     notifyJobsChanged()
     return
   }
   rescanRequested.delete(folderId)
+  repository.setSourceFolderScanState(folderId, "scanning")
+  notifyLibraryChanged()
   const scan = scanSourceFolder(repository, folderId, path, {
     onProgress: createThrottledNotification(notifyLibraryChanged, 500),
     excludedPaths: [repository.getClipOutputFolder()].filter((value): value is string => Boolean(value))

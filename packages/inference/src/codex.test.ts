@@ -11,6 +11,17 @@ afterEach(async () => {
 })
 
 describe("CodexEnricher", () => {
+  it("uses the configured model and effort in both execution and enrichment identity", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vod-search-codex-test-"))
+    temporaryPaths.push(root)
+    const executable = join(root, "fake-codex.mjs")
+    await writeFile(executable, fakeCodexScript.replaceAll("gpt-5.4-mini", "custom-model").replaceAll('model_reasoning_effort="low"', 'model_reasoning_effort="high"'))
+    const enricher = new CodexEnricher()
+    await enricher.start({ executablePath: process.execPath, executablePrefixArgs: [executable], workspacePath: join(root, "workspace"), model: "custom-model", reasoningEffort: "high" })
+    expect(enricher.version).toContain("custom-model:high")
+    await expect(enricher.enrichTranscript([{ segmentId: 42, text: "I died to the Kalphite King." }])).resolves.toHaveLength(1)
+  })
+
   it("uses a managed skill and validates structured transcript enrichment", async () => {
     const root = await mkdtemp(join(tmpdir(), "vod-search-codex-test-"))
     temporaryPaths.push(root)

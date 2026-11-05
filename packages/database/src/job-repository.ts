@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto"
 import type Database from "better-sqlite3"
 import {
   defaultProcessingSchedule,
+  enrichmentSettingsSchema,
+  type EnrichmentSettings,
   processingScheduleSchema,
   type Job,
   type JobStage,
@@ -125,28 +127,18 @@ export class JobRepository {
     )
   }
 
-  ensureEmbeddingJobs(requiredEnrichmentVersion?: string, requiredEmbeddingVersion?: string): number {
-    const staleCondition = requiredEnrichmentVersion
-      ? "sc.enrichment_version IS NULL OR sc.enrichment_version <> ?"
-      : "sc.enrichment_version IS NULL"
+  ensureEmbeddingJobs(requiredEmbeddingVersion?: string): number {
     const staleEmbeddingCondition = requiredEmbeddingVersion
       ? "sc.embedding_version IS NULL OR sc.embedding_version <> ?"
       : "sc.embedding_version IS NULL"
     return this.ensureDerivedJobs(
       "embed",
       `EXISTS (SELECT 1 FROM search_chunks sc WHERE sc.media_id = ma.id)
-       AND NOT EXISTS (
-         SELECT 1 FROM search_chunks sc
-         WHERE sc.media_id = ma.id AND (${staleCondition})
-       )
        AND EXISTS (
          SELECT 1 FROM search_chunks sc
          WHERE sc.media_id = ma.id AND (${staleEmbeddingCondition})
        )`,
-      [
-        ...(requiredEnrichmentVersion ? [requiredEnrichmentVersion] : []),
-        ...(requiredEmbeddingVersion ? [requiredEmbeddingVersion] : [])
-      ]
+      requiredEmbeddingVersion ? [requiredEmbeddingVersion] : []
     )
   }
 
@@ -167,25 +159,6 @@ export class JobRepository {
       }
     }
     return queued
-  }
-
-  cancelEmbeddingsBlockedByEnrichment(requiredVersion?: string): number {
-    const staleCondition = requiredVersion
-      ? "sc.enrichment_version IS NULL OR sc.enrichment_version <> ?"
-      : "sc.enrichment_version IS NULL"
-    return this.db.prepare(
-      `UPDATE jobs AS embedding
-       SET status = 'cancelled', progress = 0, error = NULL, updated_at_ms = ?
-       WHERE embedding.stage = 'embed'
-         AND embedding.status IN ('queued', 'paused')
-         AND (
-           NOT EXISTS (SELECT 1 FROM search_chunks sc WHERE sc.media_id = embedding.media_id)
-           OR EXISTS (
-             SELECT 1 FROM search_chunks sc
-             WHERE sc.media_id = embedding.media_id AND (${staleCondition})
-           )
-         )`
-    ).run(Date.now(), ...(requiredVersion ? [requiredVersion] : [])).changes
   }
 
   cancelPendingJobsByStage(stage: "diarize" | "embed" | "enrich"): number {
@@ -244,7 +217,9 @@ export class JobRepository {
     const row = this.db.prepare(
       `SELECT id FROM jobs
        WHERE status = 'queued' ${stageClause}
-       ORDER BY priority DESC, created_at_ms ASC LIMIT 1`
+       ORDER BY CASE stage WHEN 'probe' THEN 0 WHEN 'transcribe' THEN 1 WHEN 'embed' THEN 2
+                WHEN 'diarize' THEN 3 WHEN 'enrich' THEN 4 ELSE 5 END,
+                priority DESC, created_at_ms ASC LIMIT 1`
     ).get(...(allowedStages ?? [])) as { id: string } | undefined
     if (!row) return null
     const now = Date.now()
@@ -347,6 +322,32 @@ export class JobRepository {
     } catch {
       return processingScheduleSchema.parse(defaultProcessingSchedule)
     }
+  }
+
+  getEnrichmentSettings(): EnrichmentSettings {
+    const row = this.db.prepare("SELECT value_json FROM settings WHERE key = 'enrichment'").get() as { value_json: string } | undefined
+    if (!row) {
+      // Preserve existing Codex installations; new libraries start without cloud processing.
+      const existing = this.db.prepare("SELECT 1 FROM jobs WHERE stage = 'enrich' LIMIT 1").get()
+      const initial = enrichmentSettingsSchema.parse(existing ? { provider: "codex", model: "gpt-5.4-mini" } : {})
+      return this.setEnrichmentSettings(initial)
+    }
+    try { return enrichmentSettingsSchema.parse(JSON.parse(row.value_json)) } catch { return enrichmentSettingsSchema.parse({}) }
+  }
+
+  setEnrichmentSettings(settings: EnrichmentSettings): EnrichmentSettings {
+    const parsed = enrichmentSettingsSchema.parse(settings)
+    this.db.prepare(
+      `INSERT INTO settings(key, value_json, updated_at_ms) VALUES ('enrichment', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms`
+    ).run(JSON.stringify(parsed), Date.now())
+    if (parsed.provider !== "off") this.db.prepare(
+      "UPDATE jobs SET status = 'queued', error = NULL, progress = 0, updated_at_ms = ? WHERE stage = 'enrich' AND status = 'failed'"
+    ).run(Date.now())
+    else this.db.prepare(
+      "UPDATE jobs SET status = 'cancelled', error = NULL, updated_at_ms = ? WHERE stage = 'enrich' AND status IN ('queued', 'paused', 'failed')"
+    ).run(Date.now())
+    return parsed
   }
 
   setProcessingSchedule(schedule: ProcessingSchedule): ProcessingSchedule {

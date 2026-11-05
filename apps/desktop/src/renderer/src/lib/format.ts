@@ -78,6 +78,7 @@ export function processingGroupLabel(group: ProcessingScheduleGroup): string {
 export function jobStatusDescription(job: Job, schedule: ProcessingSchedule): string {
   if (job.status === "running") return `${humanize(job.stage)} is ${Math.round(job.progress * 100)}% complete`
   if (job.status === "queued") {
+    if (job.blockedReason) return job.blockedReason
     const group = scheduleGroupForJobStage(job.stage)
     if (group && !isJobStageAllowed(schedule, job.stage)) {
       const next = nextProcessingWindowStart(schedule[group])
@@ -88,6 +89,8 @@ export function jobStatusDescription(job: Job, schedule: ProcessingSchedule): st
   if (job.status === "paused") return "Paused; resume processing when this computer is available"
   if (job.status === "succeeded") return `${humanize(job.stage)} completed successfully`
   if (job.status === "failed") return `${humanize(job.stage)} stopped and can be retried`
+  if (job.stage === "enrich") return "AI summaries skipped while the selected provider is off or unavailable. Local search remains available."
+  if (job.stage === "embed" || job.stage === "diarize") return `${humanize(job.stage)} skipped while its local component is unavailable`
   return `${humanize(job.stage)} was cancelled`
 }
 
@@ -125,8 +128,9 @@ export function formatBytes(bytes: number): string {
 
 export function stageLabel(stage: MediaAsset["highestCompletedStage"]): string {
   if (stage === "ready") return "Ready"
-  if (stage === "embedded" || stage === "enriched") return "Searchable"
-  if (stage === "chunked") return "Indexed"
+  if (stage === "embedded") return "Meaning search"
+  if (stage === "enriched") return "Keyword + topics"
+  if (stage === "chunked") return "Keyword search"
   return humanize(stage)
 }
 

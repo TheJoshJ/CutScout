@@ -1,4 +1,5 @@
 export * from "./domain.js"
+export * from "./enrichment.js"
 export * from "./ipc.js"
 export * from "./search.js"
 export * from "./schedule.js"

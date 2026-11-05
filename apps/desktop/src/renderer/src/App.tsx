@@ -108,15 +108,14 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function prepareLocalModels(): Promise<void> {
+  async function prepareLocalModels(modelId: string): Promise<void> {
     setError(null)
     try {
-      for (const model of models) {
-        if (model.status === "missing" || model.status === "invalid") await window.vodSearch.models.download(model.modelId)
-      }
-      await refreshModels()
+      await window.vodSearch.models.download(modelId)
     } catch (reason) {
       showError(reason)
+    } finally {
+      await refreshModels().catch(showError)
     }
   }
 
@@ -137,10 +136,10 @@ export function App(): React.JSX.Element {
       <main className="relative min-w-0 flex-1 overflow-hidden">
         <ErrorNotice error={error} onClose={() => setError(null)} />
         <div key={view} className="workspace-view">
-          {view === "library" && <LibraryWorkspace folders={folders} media={media} stats={stats} models={models} codex={codex} processingSchedule={processingSchedule} onAddFolder={(publish) => void addFolder(publish)} onPrepareModels={() => void prepareLocalModels()} onOpenSettings={() => setView("settings")} onOpen={setSelection} onError={showError} searchState={librarySearch} setSearchState={setLibrarySearch} />}
+          {view === "library" && <LibraryWorkspace jobs={jobs} folders={folders} media={media} stats={stats} models={models} codex={codex} processingSchedule={processingSchedule} onAddFolder={(publish) => void addFolder(publish)} onPrepareModels={(modelId) => void prepareLocalModels(modelId)} onOpenSettings={() => setView("settings")} onOpenActivity={() => setView("activity")} onOpen={setSelection} onError={showError} searchState={librarySearch} setSearchState={setLibrarySearch} />}
           {view === "short-form" && <ShortFormWorkspace project={shortFormProject} onProjectChange={setShortFormProject} onOpenSource={setSelection} onError={showError} />}
           {view === "speakers" && <SpeakersWorkspace queue={speakerReviewQueue} onRefresh={refreshSpeakerReviewQueue} onOpen={(item) => setSelection({ mediaId: item.mediaId, title: item.mediaTitle, initialMs: item.sampleStartMs })} onError={showError} />}
-          {view === "activity" && <ActivityWorkspace jobs={jobs} media={media} processingSchedule={processingSchedule} onProcessingScheduleChange={setProcessingSchedule} onError={showError} />}
+          {view === "activity" && <ActivityWorkspace onOpenSettings={() => setView("settings")} jobs={jobs} media={media} processingSchedule={processingSchedule} onProcessingScheduleChange={setProcessingSchedule} onError={showError} />}
           {view === "settings" && <SettingsWorkspace folders={folders} models={models} codex={codex} theme={theme} setTheme={setTheme} onAddFolder={() => void addFolder()} onRefreshLibrary={refreshLibrary} onRefreshModels={refreshModels} onRefreshCodex={refreshCodex} onError={showError} />}
         </div>
       </main>

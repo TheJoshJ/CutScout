@@ -2,8 +2,48 @@ import { describe, expect, it } from "vitest"
 import { SearchService } from "@vod-search/search"
 import { openDatabase } from "./database.js"
 import { Repository } from "./repository.js"
+import { migrate } from "./migrations.js"
 
 describe("Repository", () => {
+  it("starts new libraries with summaries off and persists the chosen provider", () => {
+    const database = openDatabase(":memory:")
+    try {
+      const repository = new Repository(database.db)
+      expect(repository.getEnrichmentSettings()).toMatchObject({ provider: "off", model: "" })
+      repository.setEnrichmentSettings({ provider: "opencode", model: "my-provider/my-model", reasoningEffort: "low" })
+      expect(new Repository(database.db).getEnrichmentSettings()).toMatchObject({ provider: "opencode", model: "my-provider/my-model" })
+    } finally { database.close() }
+  })
+
+  it("preserves prior Codex configuration and prioritizes ingestion ahead of optional summaries", () => {
+    const database = openDatabase(":memory:")
+    try {
+      const repository = new Repository(database.db)
+      const summary = repository.enqueueJob(null, "enrich", 1000)
+      expect(repository.getEnrichmentSettings()).toMatchObject({ provider: "codex", model: "gpt-5.4-mini" })
+      const probe = repository.enqueueJob(null, "probe", 0)
+      expect(repository.claimNextJob()?.id).toBe(probe.id)
+      repository.updateJob(summary.id, { status: "failed", error: "Previous connection failed" })
+      repository.setEnrichmentSettings({ provider: "opencode", model: "next/model", reasoningEffort: "low" })
+      expect(repository.getJob(summary.id)).toMatchObject({ status: "queued", error: null })
+    } finally { database.close() }
+  })
+
+  it("upgrades existing sources with scan state without losing their index", () => {
+    const database = openDatabase(":memory:")
+    try {
+      const repository = new Repository(database.db)
+      const folder = repository.addSourceFolder("C:\\videos", "C:\\videos")
+      repository.finishSourceFolderScan(folder.id)
+      database.db.exec("ALTER TABLE source_folders DROP COLUMN scan_state; ALTER TABLE source_folders DROP COLUMN scan_error; DELETE FROM schema_migrations WHERE version = 5")
+      migrate(database.db)
+      expect(repository.getSourceFolder(folder.id)).toMatchObject({ path: "C:\\videos", scanState: "idle", scanError: null })
+      expect(repository.getSourceFolder(folder.id).lastScanAtMs).toBeTypeOf("number")
+    } finally {
+      database.close()
+    }
+  })
+
   it("stores chunks and returns timestamped full-text hits", () => {
     const database = openDatabase(":memory:")
     try {
@@ -339,7 +379,7 @@ describe("Repository", () => {
     }
   })
 
-  it("queues Codex enrichment before BGE embedding and invalidates stale vectors", () => {
+  it("indexes transcript embeddings without Codex and invalidates vectors when enrichment changes", () => {
     const database = openDatabase(":memory:")
     try {
       const repository = new Repository(database.db)
@@ -361,11 +401,17 @@ describe("Repository", () => {
 
       expect(repository.ensureEnrichmentJobs()).toBe(1)
       expect(repository.listJobs().find((job) => job.stage === "enrich")?.status).toBe("queued")
-      expect(repository.ensureEmbeddingJobs()).toBe(0)
+      expect(repository.ensureEmbeddingJobs()).toBe(1)
 
-      repository.enqueueJob(media.id, "embed")
-      expect(repository.cancelEmbeddingsBlockedByEnrichment()).toBe(1)
-      expect(repository.listJobs().find((job) => job.stage === "embed")?.status).toBe("cancelled")
+      expect(repository.listJobs().find((job) => job.stage === "embed")?.status).toBe("queued")
+      const baselineChunk = repository.getChunksForEmbedding(media.id)[0]!
+      const baselineVector = new Float32Array(384)
+      baselineVector[0] = 1
+      repository.storeEmbeddings([{ chunkId: baselineChunk.id, embedding: baselineVector }], "bge-fixture-v1")
+      repository.finishEmbedding(media.id)
+      expect(repository.semanticSearch(baselineVector, false, 10)).toHaveLength(1)
+      expect(repository.getMedia(media.id).highestCompletedStage).toBe("embedded")
+      repository.updateJob(repository.getMediaJob(media.id, "embed")!.id, { status: "succeeded", progress: 1 })
       const chunk = repository.getChunksForEmbedding(media.id)[0]!
       const enrichment = {
         chunkId: chunk.id,
@@ -389,8 +435,8 @@ describe("Repository", () => {
       const embeddingJob = repository.listJobs().find((job) => job.stage === "embed")!
       repository.updateJob(embeddingJob.id, { status: "succeeded", progress: 1 })
       expect(repository.semanticSearch(vector, false, 10)).toHaveLength(1)
-      expect(repository.ensureEmbeddingJobs("codex-fixture-v1", "bge-fixture-v1")).toBe(0)
-      expect(repository.ensureEmbeddingJobs("codex-fixture-v1", "bge-fixture-v2")).toBe(1)
+      expect(repository.ensureEmbeddingJobs("bge-fixture-v1")).toBe(0)
+      expect(repository.ensureEmbeddingJobs("bge-fixture-v2")).toBe(1)
       repository.updateJob(embeddingJob.id, { status: "succeeded", progress: 1 })
 
       repository.applyEnrichments(media.id, [{
@@ -442,7 +488,7 @@ describe("Repository", () => {
       expect(repository.ensureEnrichmentJobs("topic-prompt-v1")).toBe(0)
       expect(repository.ensureEnrichmentJobs("topic-prompt-v2")).toBe(1)
       expect(repository.getJob(enrichmentJob.id).status).toBe("queued")
-      expect(repository.ensureEmbeddingJobs("topic-prompt-v2")).toBe(0)
+      expect(repository.ensureEmbeddingJobs("bge-fixture-v1")).toBe(1)
     } finally {
       database.close()
     }

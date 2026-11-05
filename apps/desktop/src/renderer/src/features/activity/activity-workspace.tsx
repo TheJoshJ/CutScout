@@ -36,13 +36,15 @@ export function ActivityWorkspace({
   media,
   processingSchedule,
   onProcessingScheduleChange,
-  onError
+  onError,
+  onOpenSettings
 }: {
   jobs: Job[]
   media: MediaAsset[]
   processingSchedule: ProcessingSchedule
   onProcessingScheduleChange: (schedule: ProcessingSchedule) => void
   onError: (error: unknown) => void
+  onOpenSettings: () => void
 }): React.JSX.Element {
   const names = useMemo(() => new Map(media.map((item) => [item.id, item.displayName])), [media])
   const active = jobs.filter((job) => ["queued", "running", "paused", "failed"].includes(job.status))
@@ -108,7 +110,7 @@ export function ActivityWorkspace({
           {filter === "active" && history.length > 0 && <Button variant="ghost" size="sm" onClick={() => setFilter("history")}>View recent history</Button>}
         </div>
       ) : visibleJobs.map((job) => {
-        const scheduleHeld = job.status === "queued" && !isJobStageAllowed(processingSchedule, job.stage)
+        const scheduleHeld = job.status === "queued" && !job.blockedReason && !isJobStageAllowed(processingSchedule, job.stage)
         return (
           <div key={job.id} className="workspace-row grid grid-cols-[minmax(0,1fr)_8rem_8rem_auto] items-center gap-4 border-b px-2 py-3 hover:bg-accent/20 max-[1100px]:grid-cols-[minmax(0,1fr)_7rem_auto]">
             <div className="flex min-w-0 items-start gap-2.5">
@@ -117,7 +119,7 @@ export function ActivityWorkspace({
             </div>
             <div className="max-[1100px]:hidden"><div className="font-mono text-[9px] text-muted-foreground">{humanize(job.stage)}</div>{["running", "queued", "paused"].includes(job.status) ? <Progress className="mt-1.5 h-1" value={job.progress * 100} /> : <div className="mt-1 text-[9px] text-muted-foreground">{job.attempts} {job.attempts === 1 ? "attempt" : "attempts"}</div>}</div>
             <div className="max-[1100px]:hidden"><div className="font-mono text-[9px] text-muted-foreground">{formatJobTiming(job)}</div>{job.status === "running" && job.progress > 0.02 && <div className="mt-1 text-[9px] text-muted-foreground">{estimateJobRemaining(job)} remaining</div>}</div>
-            <div className="flex items-center justify-self-end gap-1.5"><Badge variant={job.status === "failed" ? "destructive" : ["running", "succeeded"].includes(job.status) ? "accent" : "secondary"}>{scheduleHeld ? "scheduled" : job.status}</Badge>{job.status === "failed" && <Button variant="ghost" size="sm" className="h-7" onClick={() => void run(() => window.vodSearch.jobs.retry(job.id))}>Retry</Button>}</div>
+            <div className="flex items-center justify-self-end gap-1.5"><Badge variant={job.status === "failed" ? "destructive" : ["running", "succeeded"].includes(job.status) ? "accent" : "secondary"}>{job.blockedReason ? "Setup needed" : scheduleHeld ? "scheduled" : job.status === "cancelled" && ["enrich", "embed", "diarize"].includes(job.stage) ? "Skipped" : job.status}</Badge>{job.blockedReason && <Button variant="ghost" size="sm" onClick={onOpenSettings}>Settings</Button>}{job.status === "failed" && <Button variant="ghost" size="sm" className="h-7" onClick={() => void run(() => window.vodSearch.jobs.retry(job.id))}>Retry</Button>}</div>
           </div>
         )
       })}

@@ -14,6 +14,7 @@ import {
 } from "electron"
 import {
   ipcChannels,
+  enrichmentSettingsSchema,
   listMediaRequestSchema,
   mediaExportClipRequestSchema,
   mediaExternalOpenRequestSchema,
@@ -61,6 +62,8 @@ let codex: CodexManager | null = null
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
+let indexerStopped = false
+let indexerStopping = false
 let trayNoticeShown = false
 let manuallyPaused = false
 let pausedForBattery = false
@@ -112,11 +115,15 @@ app.on("window-all-closed", () => {
   if (!tray && process.platform !== "darwin") app.quit()
 })
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (indexerStopped) return
+  event.preventDefault()
+  if (indexerStopping) return
+  indexerStopping = true
   quitting = true
   tray?.destroy()
   tray = null
-  indexer.stop()
+  void indexer.stop().finally(() => { indexerStopped = true; app.quit() })
 })
 
 function createWindow(): void {
@@ -184,6 +191,12 @@ function showTrayNotice(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle(ipcChannels.enrichmentGetSettings, () => indexer.request("enrichment:get-settings"))
+  ipcMain.handle(ipcChannels.enrichmentSetSettings, (_event, payload) => indexer.request("enrichment:set-settings", enrichmentSettingsSchema.parse(payload)))
+  ipcMain.handle(ipcChannels.enrichmentModels, () => indexer.request("enrichment:models", undefined, 60_000))
+  ipcMain.handle(ipcChannels.enrichmentOpenSetup, () => shell.openExternal("https://opencode.ai/docs/providers/"))
+  ipcMain.handle(ipcChannels.enrichmentStatus, () => indexer.request("enrichment:status"))
+  ipcMain.handle(ipcChannels.enrichmentTest, (_event, payload) => indexer.request("enrichment:test", enrichmentSettingsSchema.parse(payload), 5 * 60_000))
   ipcMain.handle(ipcChannels.librarySelectFolder, async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] })
     return result.canceled ? null : result.filePaths[0] ?? null

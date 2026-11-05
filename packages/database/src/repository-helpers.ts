@@ -5,6 +5,8 @@ export interface SourceFolderRow {
   path: string
   added_at_ms: number
   last_scan_at_ms: number | null
+  scan_state: SourceFolder["scanState"]
+  scan_error: string | null
   publish_shared_metadata: number
   available_media_count: number
   missing_media_count: number
@@ -62,7 +64,7 @@ export const indexStageOrder: Record<IndexStage, number> = {
 }
 
 export function mapSourceFolder(row: SourceFolderRow): SourceFolder {
-  return { id: row.id, path: row.path, addedAtMs: row.added_at_ms, lastScanAtMs: row.last_scan_at_ms, publishSharedMetadata: row.publish_shared_metadata === 1, availableMediaCount: row.available_media_count, missingMediaCount: row.missing_media_count }
+  return { id: row.id, path: row.path, addedAtMs: row.added_at_ms, lastScanAtMs: row.last_scan_at_ms, scanState: row.scan_state, scanError: row.scan_error, publishSharedMetadata: row.publish_shared_metadata === 1, availableMediaCount: row.available_media_count, missingMediaCount: row.missing_media_count }
 }
 
 export function mapMedia(row: MediaRow): MediaAsset {

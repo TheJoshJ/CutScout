@@ -215,6 +215,14 @@ const migrations: Migration[] = [
 
       CREATE INDEX speaker_turns_media_time_idx ON speaker_turns(media_id, start_ms, end_ms);
     `
+  },
+  {
+    version: 5,
+    name: "source_scan_state",
+    sql: `
+      ALTER TABLE source_folders ADD COLUMN scan_state TEXT NOT NULL DEFAULT 'idle';
+      ALTER TABLE source_folders ADD COLUMN scan_error TEXT;
+    `
   }
 ]
 

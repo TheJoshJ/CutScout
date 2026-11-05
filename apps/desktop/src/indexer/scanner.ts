@@ -21,6 +21,17 @@ export async function scanSourceFolder(
   sourcePath: string,
   callbacks: ScanCallbacks = {}
 ): Promise<void> {
+  repository.setSourceFolderScanState(sourceFolderId, "scanning")
+  try {
+    await scanFolder(repository, sourceFolderId, sourcePath, callbacks)
+    repository.finishSourceFolderScan(sourceFolderId)
+  } catch (error) {
+    repository.setSourceFolderScanState(sourceFolderId, "failed", error instanceof Error ? error.message : String(error))
+    throw error
+  }
+}
+
+async function scanFolder(repository: Repository, sourceFolderId: string, sourcePath: string, callbacks: ScanCallbacks): Promise<void> {
   const canonicalRoot = await realpath(sourcePath)
   const excludedRoots = await Promise.all((callbacks.excludedPaths ?? []).map(async (path) =>
     realpath(path).catch(() => resolve(path))))
@@ -45,6 +56,7 @@ export async function scanSourceFolder(
   }
   repository.markMissingExcept(sourceFolderId, canonicalPaths)
 
+  const failures: string[] = []
   for (let index = 0; index < canonicalPaths.length; index += 1) {
     const canonicalPath = canonicalPaths[index]!
     try {
@@ -76,11 +88,12 @@ export async function scanSourceFolder(
       callbacks.onMediaIndexed?.()
     } catch (error) {
       console.error(`Failed to inspect ${canonicalPath}:`, error)
+      failures.push(`${basename(canonicalPath)}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
   repository.markMissingExcept(sourceFolderId, canonicalPaths)
-  repository.finishSourceFolderScan(sourceFolderId)
+  if (failures.length > 0) throw new Error(`${failures.length} file(s) could not be indexed. ${failures[0]}`)
 }
 
 async function indexSidecar(repository: Repository, mediaId: string, subtitlePath: string): Promise<void> {
@@ -122,12 +135,8 @@ async function* walk(root: string, excludedRoots: string[]): AsyncGenerator<stri
   while (directories.length > 0) {
     const directory = directories.pop()!
     if (excludedRoots.some((excludedRoot) => isPathWithin(directory, excludedRoot))) continue
-    let entries
-    try {
-      entries = await readdir(directory, { withFileTypes: true })
-    } catch {
-      continue
-    }
+    // An unreadable directory is a failed scan, not evidence that its videos disappeared.
+    const entries = await readdir(directory, { withFileTypes: true })
     for (const entry of entries) {
       const path = resolve(directory, entry.name)
       if (entry.isDirectory()) directories.push(path)

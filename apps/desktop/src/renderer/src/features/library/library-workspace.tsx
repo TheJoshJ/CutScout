@@ -1,5 +1,5 @@
 import { type FormEvent, type SetStateAction, useMemo, useRef, useState } from "react"
-import type { CodexStatus, LibraryStats, MediaAsset, ModelInstallation, ProcessingSchedule, SearchMode, SourceFolder } from "@vod-search/contracts"
+import type { Job, CodexStatus, LibraryStats, MediaAsset, ModelInstallation, ProcessingSchedule, SearchMode, SourceFolder } from "@vod-search/contracts"
 import { ChevronRight, LoaderCircle, Plus, Search, SlidersHorizontal, X } from "lucide-react"
 import { initialLibrarySearchState, type LibrarySearchState } from "@/app-types"
 import { PageHeader } from "@/components/app-shell"
@@ -16,8 +16,10 @@ import { formatDate, formatDuration, formatTimestamp, joinDisplayPath, localDate
 import { cn } from "@/lib/utils"
 import { EmptyLibrary } from "./empty-library"
 import { SearchResults } from "./search-results"
+import { LibraryReadiness } from "./library-readiness"
 
 export interface LibraryWorkspaceProps {
+  jobs: Job[]
   folders: SourceFolder[]
   media: MediaAsset[]
   stats: LibraryStats
@@ -25,19 +27,22 @@ export interface LibraryWorkspaceProps {
   codex: CodexStatus
   processingSchedule: ProcessingSchedule
   onAddFolder: (publishSharedMetadata?: boolean) => void
-  onPrepareModels: () => void
+  onPrepareModels: (modelId: string) => void
   onOpenSettings: () => void
+  onOpenActivity: () => void
   onOpen: (selection: MediaWorkspaceSelection) => void
   onError: (error: unknown) => void
   searchState: LibrarySearchState
   setSearchState: (value: SetStateAction<LibrarySearchState>) => void
 }
 
-export function LibraryWorkspace({ folders, media, stats, models, codex, processingSchedule, onAddFolder, onPrepareModels, onOpenSettings, onOpen, onError, searchState, setSearchState }: LibraryWorkspaceProps): React.JSX.Element {
+export function LibraryWorkspace({ jobs, folders, media, stats, models, codex, processingSchedule, onAddFolder, onPrepareModels, onOpenSettings, onOpenActivity, onOpen, onError, searchState, setSearchState }: LibraryWorkspaceProps): React.JSX.Element {
   const [searching, setSearching] = useState(false)
   const searchRequestIdRef = useRef(0)
   const { query, submittedQuery, mode, dateFrom, dateTo, hits, searched } = searchState
-  const semanticReady = models.some((model) => model.modelId === "bge-small-en-v1.5" && model.status === "installed")
+  const semanticReady = models.some((model) => model.modelId === "bge-small-en-v1.5" && model.status === "installed") && media.some((item) => item.highestCompletedStage === "embedded" || item.highestCompletedStage === "ready")
+  const failedMedia = new Set(jobs.filter((job) => job.status === "failed").map((job) => job.mediaId))
+  const blockedReason = jobs.find((job) => job.blockedReason)?.blockedReason
   const folderById = useMemo(() => new Map(folders.map((folder) => [folder.id, folder.path])), [folders])
 
   function updateSearch(patch: Partial<LibrarySearchState>): void {
@@ -73,9 +78,11 @@ export function LibraryWorkspace({ folders, media, stats, models, codex, process
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader title="Library" description={stats.totalMedia ? `${stats.totalMedia.toLocaleString()} videos · ${formatDuration(stats.totalDurationMs)} · ${stats.searchableChunks.toLocaleString()} searchable moments` : "Add a folder to begin indexing"} actions={<Button size="sm" onClick={() => onAddFolder(false)}><Plus />Add folder</Button>} />
-      {media.length > 0 && <form onSubmit={submitSearch} className="command-bar border-b px-5 py-3"><div className="mx-auto flex max-w-[1480px] flex-wrap items-center gap-2"><div className="relative min-w-[18rem] flex-1"><Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => updateSearch({ query: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void runSearch(); return } if (event.key === "Escape" && (query || searched || searching)) { event.preventDefault(); clearSearchInput() } }} className="h-9 bg-background pl-8 pr-8 text-xs" placeholder="Search dialogue, people, places, or events" />{(query || searched || searching) && <button type="button" aria-label={searched || searching ? "Clear search and show all videos" : "Clear query"} onClick={clearSearchInput} className="absolute right-2 top-1/2 grid size-5 -translate-y-1/2 cursor-pointer place-items-center rounded text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30"><X className="size-3" /></button>}</div><SearchFilters mode={mode} dateFrom={dateFrom} dateTo={dateTo} onChange={updateSearch} /><Button type="submit" size="sm" className="h-9" disabled={searching || submitAction === "none"}>{searching ? <LoaderCircle className="animate-spin" /> : submitAction === "clear" ? <X /> : <Search />}{searching ? "Searching" : submitAction === "clear" ? "Show all" : "Search"}</Button><div className="ml-auto flex items-center gap-1.5 text-[9px] text-muted-foreground max-[1240px]:hidden"><span className={cn("size-1.5 rounded-full", semanticReady ? "status-dot bg-primary text-primary" : "bg-muted-foreground/45")} />{semanticReady ? "Semantic index ready" : "Keyword search available"}</div></div></form>}
-      <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-[1480px] px-5 py-4">{searched ? <SearchResults hits={hits} query={submittedQuery || query} searching={searching} onClear={clearSearch} onOpen={onOpen} onError={onError} /> : media.length === 0 ? <EmptyLibrary folders={folders} models={models} codex={codex} processingSchedule={processingSchedule} onAddFolder={onAddFolder} onPrepareModels={onPrepareModels} onOpenSettings={onOpenSettings} /> : <VideoList media={media} folderById={folderById} onOpen={onOpen} />}</div></div>
+      <PageHeader title="Library" description={stats.totalMedia ? `${stats.totalMedia.toLocaleString()} videos · ${formatDuration(stats.totalDurationMs)} · ${stats.searchableChunks.toLocaleString()} searchable moments` : "Add a folder to begin indexing"} actions={media.length > 0 ? <Button size="sm" onClick={() => onAddFolder(false)}><Plus />Add folder</Button> : undefined} />
+      {media.length > 0 && <form onSubmit={submitSearch} className="command-bar border-b px-5 py-3"><div className="mx-auto flex max-w-[1480px] flex-wrap items-center gap-2"><div className="relative min-w-[18rem] flex-1"><Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => updateSearch({ query: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void runSearch(); return } if (event.key === "Escape" && (query || searched || searching)) { event.preventDefault(); clearSearchInput() } }} className="h-9 bg-background pl-8 pr-8 text-xs" placeholder="Search dialogue, people, places, or events" />{(query || searched || searching) && <button type="button" aria-label={searched || searching ? "Clear search and show all videos" : "Clear query"} onClick={clearSearchInput} className="absolute right-2 top-1/2 grid size-5 -translate-y-1/2 cursor-pointer place-items-center rounded text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30"><X className="size-3" /></button>}</div><SearchFilters mode={mode} dateFrom={dateFrom} dateTo={dateTo} onChange={updateSearch} /><Button type="submit" size="sm" className="h-9" disabled={searching || submitAction === "none"}>{searching ? <LoaderCircle className="animate-spin" /> : submitAction === "clear" ? <X /> : <Search />}{searching ? "Searching" : submitAction === "clear" ? "Show all" : "Search"}</Button><div className="ml-auto flex items-center gap-1.5 text-[9px] text-muted-foreground max-[1240px]:hidden"><span className={cn("size-1.5 rounded-full", semanticReady ? "status-dot bg-primary text-primary" : "bg-muted-foreground/45")} />{semanticReady ? "Semantic index ready" : stats.searchableChunks > 0 ? "Keyword search available" : "Waiting for a transcript"}</div></div></form>}
+      <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-[1480px] px-5 py-4">
+        {media.length > 0 && <LibraryReadiness folders={folders} models={models} processingSchedule={processingSchedule} onDownload={onPrepareModels} onError={onError} />}
+        {(blockedReason || failedMedia.size > 0) && <div role="status" className="flex items-center justify-between gap-4 border-b px-3 py-3 text-xs"><span>{blockedReason ?? `${failedMedia.size} videos need attention. Open Activity to review and retry failed processing.`}</span><Button variant="outline" size="sm" onClick={onOpenActivity}>View Activity</Button></div>}{searched ? <SearchResults hits={hits} query={submittedQuery || query} searching={searching} onClear={clearSearch} onOpen={onOpen} onError={onError} /> : media.length === 0 ? <EmptyLibrary folders={folders} models={models} codex={codex} processingSchedule={processingSchedule} onAddFolder={onAddFolder} onPrepareModels={onPrepareModels} onOpenSettings={onOpenSettings} onError={onError} /> : <VideoList failedMedia={failedMedia} media={media} folderById={folderById} onOpen={onOpen} />}</div></div>
     </div>
   )
 }
@@ -85,7 +92,7 @@ function SearchFilters({ mode, dateFrom, dateTo, onChange }: { mode: SearchMode;
   return <Popover><PopoverTrigger asChild><Button type="button" variant="outline" size="sm" className="h-9 bg-background"><SlidersHorizontal />Filters{activeCount > 0 && <Badge variant="accent" className="ml-0.5">{activeCount}</Badge>}</Button></PopoverTrigger><PopoverContent align="end" className="w-80 p-3"><PopoverHeader><PopoverTitle className="text-xs">Search controls</PopoverTitle><PopoverDescription className="text-[10px]">Best match combines exact wording with meaning.</PopoverDescription></PopoverHeader><div className="mt-3 flex flex-col gap-3 border-y py-3"><label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">Search method<Select value={mode} onValueChange={(value) => onChange({ mode: value as SearchMode })}><SelectTrigger className="h-8 w-full text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="hybrid">Best match</SelectItem><SelectItem value="semantic">Meaning</SelectItem><SelectItem value="keyword">Exact words</SelectItem></SelectContent></Select></label><div className="grid grid-cols-2 gap-2"><label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">From<Input aria-label="Created after" type="date" value={dateFrom} onChange={(event) => onChange({ dateFrom: event.target.value })} className="h-8 text-[10px]" /></label><label className="flex flex-col gap-1 text-[10px] font-medium text-muted-foreground">To<Input aria-label="Created before" type="date" value={dateTo} onChange={(event) => onChange({ dateTo: event.target.value })} className="h-8 text-[10px]" /></label></div></div><div className="mt-2 flex items-center justify-between"><span className="text-[9px] text-muted-foreground">Filters apply on the next search.</span><Button type="button" variant="ghost" size="sm" className="h-7" disabled={activeCount === 0} onClick={() => onChange({ mode: "hybrid", dateFrom: "", dateTo: "" })}>Reset</Button></div></PopoverContent></Popover>
 }
 
-function VideoList({ media, folderById, onOpen }: { media: MediaAsset[]; folderById: Map<string, string>; onOpen: (selection: MediaWorkspaceSelection) => void }): React.JSX.Element {
+function VideoList({ failedMedia, media, folderById, onOpen }: { failedMedia: Set<string | null>; media: MediaAsset[]; folderById: Map<string, string>; onOpen: (selection: MediaWorkspaceSelection) => void }): React.JSX.Element {
   return (
     <section className="pb-5">
       <div className="flex h-10 items-center justify-between border-b text-xs">
@@ -105,7 +112,7 @@ function VideoList({ media, folderById, onOpen }: { media: MediaAsset[]; folderB
             <div className="min-w-0"><div className="truncate text-xs font-semibold transition-colors group-hover:text-primary" title={item.displayName}>{displayTitle}</div><div className="mt-1 truncate font-mono text-[9px] text-muted-foreground" title={location}>{location}</div></div>
             <span className="text-[10px] text-muted-foreground max-[1100px]:hidden">{formatDate(item.createdAtMs)}</span>
             <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{item.durationMs ? formatTimestamp(item.durationMs) : "—"}</span>
-            <Badge variant={item.highestCompletedStage === "ready" ? "accent" : "secondary"} className="max-[1100px]:hidden">{stageLabel(item.highestCompletedStage)}</Badge>
+            <Badge title={failedMedia.has(item.id) ? "Open Activity to retry failed processing" : undefined} variant={failedMedia.has(item.id) ? "destructive" : ["ready", "embedded", "chunked", "enriched"].includes(item.highestCompletedStage) ? "accent" : "secondary"} className="max-[1100px]:hidden">{failedMedia.has(item.id) ? "Needs attention" : stageLabel(item.highestCompletedStage)}</Badge>
             <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
           </button>
         )

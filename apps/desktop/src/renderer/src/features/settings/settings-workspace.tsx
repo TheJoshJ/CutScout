@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
+import { EnrichmentSettingsPanel } from "./enrichment-settings"
 import {
   type CodexStatus,
   type ModelInstallation,
   type SourceFolder,
   type SpeakerEngineStatus
 } from "@vod-search/contracts"
-import { CheckCircle2, Clock3, EllipsisVertical, FolderOpen, FolderOutput, HardDrive, LoaderCircle, Plus, Settings, Sparkles, Trash2, Users } from "lucide-react"
+import { CheckCircle2, Clock3, EllipsisVertical, FolderOpen, FolderOutput, HardDrive, LoaderCircle, Plus, Settings, Trash2, Users } from "lucide-react"
 import type { Theme } from "@/app-types"
 import { WorkspacePage } from "@/components/app-shell"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -15,7 +16,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { codexStatusLabel, formatBytes, formatRelative, modelDescription, modelName, speakerEngineLabel } from "@/lib/format"
+import { formatBytes, formatRelative, modelDescription, modelName, speakerEngineLabel } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 export interface SettingsWorkspaceProps {
@@ -91,30 +92,22 @@ export function SettingsWorkspace({ folders, models, codex, theme, setTheme, onA
     }
   }
 
-  const codexBusy = ["checking", "installing", "updating", "signing-in"].includes(codex.state)
   return (
     <WorkspacePage title="Settings" description="Sources, processing components, and local preferences" actions={<Button size="sm" onClick={onAddFolder}><Plus />Add folder</Button>}>
-      <SettingsSection title="Codex enrichment" description="Summaries and searchable event metadata generated from transcripts.">
-        <SettingRow icon={Sparkles} title="Codex CLI" description={`Uses your ChatGPT or OpenAI account${codex.version ? ` · ${codex.version}` : ""}. Transcript batches are sent to OpenAI for enrichment.`}>
-          <Badge variant={codex.state === "ready" ? "accent" : codex.state === "error" ? "destructive" : "secondary"}>{codexStatusLabel(codex)}</Badge>
-          {codex.installed && !codex.authenticated && <Button size="sm" disabled={codexBusy} onClick={() => void runCodex(() => window.vodSearch.codex.login())}>{codex.state === "signing-in" ? <LoaderCircle className="animate-spin" /> : null}Sign in</Button>}
-          {codex.state !== "unsupported" && <Button variant={codex.installed ? "outline" : "default"} size="sm" disabled={codexBusy} onClick={() => void runCodex(() => window.vodSearch.codex.install())}>{["installing", "updating"].includes(codex.state) ? <LoaderCircle className="animate-spin" /> : null}{codex.installed ? "Update" : "Install"}</Button>}
-        </SettingRow>
-        {codex.error && <div className="border-t py-2 text-[10px] text-destructive">{codex.error}</div>}
-      </SettingsSection>
-
       <SettingsSection title="On-device components" description="Local transcription, speaker recognition, and semantic search models.">
-        {models.map((model) => <SettingRow key={model.modelId} icon={HardDrive} title={modelName(model.modelId)} description={`${modelDescription(model.modelId)} · ${formatBytes(model.sizeBytes)}`}>{model.status === "installed" ? <Badge variant="accent"><CheckCircle2 />Installed</Badge> : model.status === "downloading" ? <Button variant="ghost" size="sm" onClick={() => void window.vodSearch.models.cancelDownload(model.modelId)}>Cancel</Button> : <Button variant="outline" size="sm" onClick={() => void download(model.modelId)}>Install</Button>}</SettingRow>)}
+        {models.map((model) => <SettingRow key={model.modelId} icon={HardDrive} title={modelName(model.modelId)} description={`${modelDescription(model.modelId)} · ${formatBytes(model.sizeBytes)}${model.error ? ` · ${model.error}` : ""}`}>{model.status === "installed" ? <Badge variant="accent"><CheckCircle2 />Installed</Badge> : model.status === "downloading" ? <Button variant="ghost" size="sm" onClick={() => void window.vodSearch.models.cancelDownload(model.modelId)}>Cancel</Button> : <Button variant="outline" size="sm" onClick={() => void download(model.modelId)}>Install</Button>}</SettingRow>)}
         {models.some((model) => model.status === "downloading") && <div className="border-t py-2">{models.filter((model) => model.status === "downloading").map((model) => <Progress key={model.modelId} className="h-1" value={model.bytesDownloaded / model.sizeBytes * 100} />)}</div>}
         <SettingRow icon={Users} title="Sherpa ONNX speaker recognition" description="Bundled local speaker separation and recurring voice matching. No account or setup required."><Badge variant={speakerEngine.state === "ready" ? "accent" : speakerEngine.state === "error" ? "destructive" : "secondary"}>{speakerEngine.state === "ready" ? <CheckCircle2 /> : null}{speakerEngineLabel(speakerEngine)}</Badge></SettingRow>
         {speakerEngine.error && <div className="py-2 text-[10px] text-destructive">{speakerEngine.error}</div>}
       </SettingsSection>
 
+      <EnrichmentSettingsPanel codex={codex} onInstallCodex={() => void runCodex(() => window.vodSearch.codex.install())} onSignInCodex={() => void runCodex(() => window.vodSearch.codex.login())} onError={onError} />
+
       <SettingsSection title="Source folders" description="Shared bundles are imported automatically. Publishing is controlled per folder.">
         {folders.length === 0 ? <div className="py-4 text-xs text-muted-foreground">No folders configured.</div> : folders.map((folder) => (
-          <SettingRow key={folder.id} icon={FolderOpen} title={folder.path} titleMono description={`${folder.availableMediaCount} videos · ${folder.missingMediaCount} missing · ${folder.lastScanAtMs ? `scanned ${formatRelative(folder.lastScanAtMs)}` : "scanning"}`}>
-            <div className="text-right"><div className="flex items-center justify-end gap-1.5"><Badge variant={folder.missingMediaCount > 0 ? "destructive" : folder.lastScanAtMs ? "accent" : "secondary"}>{folder.lastScanAtMs ? folder.missingMediaCount > 0 ? "Needs attention" : "Healthy" : "Scanning"}</Badge><span className="text-[9px] text-muted-foreground">{folder.publishSharedMetadata ? "Sharing transcripts" : "Import only"}</span></div><div className="mt-1 flex items-center justify-end gap-2"><span className="text-[9px] text-muted-foreground">Publish</span><Switch checked={folder.publishSharedMetadata} disabled={busyFolderId === folder.id} onCheckedChange={(enabled) => void setFolderSharing(folder.id, enabled)} /></div></div>
-            <FolderActions folder={folder} busy={busyFolderId === folder.id} onAction={runFolderAction} onRemove={() => setFolderToRemove(folder)} />
+          <SettingRow key={folder.id} icon={FolderOpen} title={folder.path} titleMono description={`${folder.availableMediaCount} videos · ${folder.missingMediaCount} missing · ${folder.scanState === "failed" ? `Scan failed: ${folder.scanError}` : folder.scanState === "scanning" ? "Scanning" : folder.scanState === "queued" ? "Scan scheduled" : folder.lastScanAtMs ? `scanned ${formatRelative(folder.lastScanAtMs)}` : "Not scanned"}`}>
+            <div className="text-right"><div className="flex items-center justify-end gap-1.5"><Badge variant={folder.scanState === "failed" || folder.missingMediaCount > 0 ? "destructive" : folder.scanState === "idle" && folder.lastScanAtMs ? "accent" : "secondary"}>{folder.scanState === "failed" ? "Scan failed" : folder.scanState === "scanning" ? "Scanning" : folder.scanState === "queued" ? "Scheduled" : folder.availableMediaCount === 0 ? "No videos" : folder.missingMediaCount > 0 ? "Needs attention" : "Scanned"}</Badge><span className="text-[9px] text-muted-foreground">{folder.publishSharedMetadata ? "Sharing transcripts" : "Import only"}</span></div><div className="mt-1 flex items-center justify-end gap-2"><span className="text-[9px] text-muted-foreground">Publish</span><Switch checked={folder.publishSharedMetadata} disabled={busyFolderId === folder.id} onCheckedChange={(enabled) => void setFolderSharing(folder.id, enabled)} /></div></div>
+            {folder.scanState === "failed" && <Button variant="outline" size="sm" onClick={() => void runFolderAction(folder.id, () => window.vodSearch.library.rescanFolder(folder.id))}>Retry scan</Button>}<FolderActions folder={folder} busy={busyFolderId === folder.id} onAction={runFolderAction} onRemove={() => setFolderToRemove(folder)} />
           </SettingRow>
         ))}
       </SettingsSection>
@@ -131,7 +124,7 @@ export function SettingsWorkspace({ folders, models, codex, theme, setTheme, onA
         <SettingRow title="Resource mode" description="Controls CPU resources available to local speech processing."><Select defaultValue="normal" onValueChange={(value) => void window.vodSearch.jobs.setResourceMode(value as "low" | "normal" | "high").catch(onError)}><SelectTrigger className="h-8 min-w-40 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="low">Low impact</SelectItem><SelectItem value="normal">Balanced</SelectItem><SelectItem value="high">High performance</SelectItem></SelectContent></Select></SettingRow>
       </SettingsSection>
 
-      <SettingsSection title="Storage and privacy" description="How CutScout handles your data."><div className="py-3 text-xs leading-5 text-muted-foreground">Videos, transcripts, voice patterns, embeddings, and the search index remain in local application data. Speaker recognition runs entirely on this computer. Codex only receives transcript batches when it creates enrichment metadata.</div></SettingsSection>
+      <SettingsSection title="Storage and privacy" description="How CutScout handles your data."><div className="py-3 text-xs leading-5 text-muted-foreground">Videos, transcripts, voice patterns, embeddings, and the search index remain in local application data. Speaker recognition runs entirely on this computer. When AI summaries are enabled, your selected provider receives untimed transcript text. Authentication is managed by Codex or OpenCode.</div></SettingsSection>
       <RemoveFolderDialog folder={folderToRemove} onClose={() => setFolderToRemove(null)} onRemove={(folder) => void runFolderAction(folder.id, () => window.vodSearch.library.removeFolder(folder.id))} />
     </WorkspacePage>
   )

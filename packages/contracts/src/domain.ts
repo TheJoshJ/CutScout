@@ -42,6 +42,8 @@ export const sourceFolderSchema = z.object({
   path: z.string(),
   addedAtMs: z.number().int().nonnegative(),
   lastScanAtMs: z.number().int().nonnegative().nullable(),
+  scanState: z.enum(["idle", "queued", "scanning", "failed"]),
+  scanError: z.string().nullable(),
   publishSharedMetadata: z.boolean(),
   availableMediaCount: z.number().int().nonnegative(),
   missingMediaCount: z.number().int().nonnegative()
@@ -196,6 +198,7 @@ export const transcriptTopicSchema = z.object({
 export type TranscriptTopic = z.infer<typeof transcriptTopicSchema>
 
 export const jobSchema = z.object({
+  blockedReason: z.string().optional(),
   id: z.string(),
   mediaId: z.string().nullable(),
   stage: jobStageSchema,

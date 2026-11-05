@@ -1,4 +1,6 @@
 export * from "./embeddings.js"
+export * from "./opencode.js"
+export { type TranscriptEnricher } from "./topic-analysis.js"
 export * from "./codex.js"
 export * from "./models.js"
 export * from "./probe.js"
